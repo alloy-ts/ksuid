@@ -1,11 +1,34 @@
 import { expect, test } from "vite-plus/test";
-import { Ksuid, KsuidMs } from "./main.ts";
+import { CrockfordBase32, Ksuid, KsuidMs } from "./main.ts";
 
 test("Ksuid creates valid base62 string", () => {
   const ksuid = Ksuid.now();
   expect(typeof ksuid.toBase62()).toBe("string");
   expect(ksuid.toBase62().length).toBe(27);
   expect(Ksuid.isValid(ksuid.toBase62())).toBe(true);
+});
+
+test("Ksuid supports Crockford Base32 encoding and options", () => {
+  const ksuid = Ksuid.now();
+  const b32 = ksuid.toCrockfordBase32();
+  expect(b32.length).toBe(32);
+  expect(ksuid.toString("base32")).toBe(b32);
+  expect(ksuid.toString({ enc: "base32" })).toBe(b32);
+
+  const ksuid2 = Ksuid.fromCrockfordBase32(b32);
+  expect(ksuid2.toBase62()).toBe(ksuid.toBase62());
+});
+
+test("CrockfordBase32 utility with custom and shuffled alphabet", () => {
+  const defaultAlph = CrockfordBase32.defaultAlphabet();
+  expect(defaultAlph).toBe("0123456789ABCDEFGHJKMNPQRSTVWXYZ");
+
+  const shuffled = CrockfordBase32.shuffleAlphabet("test-seed");
+  expect(shuffled.length).toBe(32);
+
+  const encoder = new CrockfordBase32(shuffled);
+  const numStr = encoder.encodeNumber(99999);
+  expect(encoder.decodeNumber(numStr)).toBe(99999);
 });
 
 test("Ksuid base62 parsing and formatting", () => {

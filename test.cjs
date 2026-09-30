@@ -1,13 +1,42 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { Ksuid, KsuidMs } = require("./dist/index.js");
+const { Ksuid, KsuidMs, CrockfordBase32 } = require("./dist/index.js");
 
 void test("Ksuid - creation and base62", () => {
   const ksuid = Ksuid.now();
   assert.equal(typeof ksuid.toBase62(), "string");
   assert.equal(ksuid.toBase62().length, 27);
   assert.equal(ksuid.toString(), ksuid.toBase62());
+});
+
+void test("Ksuid - Crockford Base32 encoding and options", () => {
+  const ksuid = Ksuid.now();
+  const b32 = ksuid.toCrockfordBase32();
+  assert.equal(typeof b32, "string");
+  assert.equal(b32.length, 32);
+
+  assert.equal(ksuid.toString("base32"), b32);
+  assert.equal(ksuid.toString({ enc: "base32" }), b32);
+
+  const ksuidFromB32 = Ksuid.fromCrockfordBase32(b32);
+  assert.equal(ksuidFromB32.toBase62(), ksuid.toBase62());
+
+  const ksuidFromCtor = new Ksuid(b32);
+  assert.equal(ksuidFromCtor.toBase62(), ksuid.toBase62());
+});
+
+void test("CrockfordBase32 class and shuffleAlphabet", () => {
+  const defaultAlph = CrockfordBase32.defaultAlphabet();
+  assert.equal(defaultAlph, "0123456789ABCDEFGHJKMNPQRSTVWXYZ");
+
+  const shuffled = CrockfordBase32.shuffleAlphabet("my-seed");
+  assert.equal(shuffled.length, 32);
+
+  const cb32 = new CrockfordBase32(shuffled);
+  const numStr = cb32.encodeNumber(12345);
+  const numDec = cb32.decodeNumber(numStr);
+  assert.equal(numDec, 12345);
 });
 
 void test("Ksuid - from base62 string", () => {
