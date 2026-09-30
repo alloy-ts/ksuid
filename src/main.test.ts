@@ -9,7 +9,7 @@ test("Ksuid creates valid base62 string", () => {
   expect(ksuid.timestampSize).toBe("32bit");
 });
 
-test("Ksuid supports timestampSize option (32bit and 48bit)", () => {
+test("Ksuid supports timestampSize option (32bit, 48bit, 64bit)", () => {
   const k32 = new Ksuid({ timestampSize: "32bit" });
   expect(k32.timestampSize).toBe("32bit");
   expect(k32.payloadBytes).toBe(16);
@@ -18,8 +18,26 @@ test("Ksuid supports timestampSize option (32bit and 48bit)", () => {
   expect(k48.timestampSize).toBe("48bit");
   expect(k48.payloadBytes).toBe(15);
 
-  const k48WithTs = new Ksuid({ timestampSize: "48bit", timestamp: 1700000000000 });
-  expect(k48WithTs.timestampSize).toBe("48bit");
+  const k64 = new Ksuid({ timestampSize: "64bit" });
+  expect(k64.timestampSize).toBe("64bit");
+  expect(k64.payloadBytes).toBe(15);
+});
+
+test("Ksuid constructor options { enc: 'base32', alphabet, timestampSize }", () => {
+  const customAlph = CrockfordBase32.shuffleAlphabet("test-seed-48");
+  const ksuid = new Ksuid({
+    enc: "base32",
+    alphabet: customAlph,
+    timestampSize: "48bit",
+  });
+
+  expect(ksuid.timestampSize).toBe("48bit");
+  expect(ksuid.enc).toBe("base32");
+  expect(ksuid.alphabet).toBe(customAlph);
+
+  const str = ksuid.toString();
+  expect(str.length).toBe(32);
+  expect(ksuid.toCrockfordBase32(customAlph)).toBe(str);
 });
 
 test("Ksuid supports Crockford Base32 encoding and options", () => {

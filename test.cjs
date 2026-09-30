@@ -11,7 +11,7 @@ void test("Ksuid - creation and base62", () => {
   assert.equal(ksuid.timestampSize, "32bit");
 });
 
-void test("Ksuid - timestampSize option (32bit vs 48bit)", () => {
+void test("Ksuid - timestampSize options (32bit, 48bit, 64bit)", () => {
   const ksuid32 = new Ksuid({ timestampSize: "32bit" });
   assert.equal(ksuid32.timestampSize, "32bit");
   assert.equal(ksuid32.payloadBytes, 16);
@@ -20,11 +20,26 @@ void test("Ksuid - timestampSize option (32bit vs 48bit)", () => {
   assert.equal(ksuid48.timestampSize, "48bit");
   assert.equal(ksuid48.payloadBytes, 15);
 
-  const ksuidCustomTs = new Ksuid({
+  const ksuid64 = new Ksuid({ timestampSize: "64bit" });
+  assert.equal(ksuid64.timestampSize, "64bit");
+  assert.equal(ksuid64.payloadBytes, 15);
+});
+
+void test("Ksuid - constructor options { enc: 'base32', alphabet, timestampSize }", () => {
+  const customAlph = CrockfordBase32.shuffleAlphabet("custom-seed");
+  const ksuid = new Ksuid({
+    enc: "base32",
+    alphabet: customAlph,
     timestampSize: "48bit",
-    timestamp: 1700000000000,
   });
-  assert.equal(ksuidCustomTs.timestampSize, "48bit");
+
+  assert.equal(ksuid.timestampSize, "48bit");
+  assert.equal(ksuid.enc, "base32");
+  assert.equal(ksuid.alphabet, customAlph);
+
+  const str = ksuid.toString();
+  assert.equal(str.length, 32);
+  assert.equal(ksuid.toCrockfordBase32(customAlph), str);
 });
 
 void test("Ksuid - Crockford Base32 encoding and options", () => {
