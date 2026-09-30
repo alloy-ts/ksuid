@@ -6,6 +6,20 @@ test("Ksuid creates valid base62 string", () => {
   expect(typeof ksuid.toBase62()).toBe("string");
   expect(ksuid.toBase62().length).toBe(27);
   expect(Ksuid.isValid(ksuid.toBase62())).toBe(true);
+  expect(ksuid.timestampSize).toBe("32bit");
+});
+
+test("Ksuid supports timestampSize option (32bit and 48bit)", () => {
+  const k32 = new Ksuid({ timestampSize: "32bit" });
+  expect(k32.timestampSize).toBe("32bit");
+  expect(k32.payloadBytes).toBe(16);
+
+  const k48 = new Ksuid({ timestampSize: "48bit" });
+  expect(k48.timestampSize).toBe("48bit");
+  expect(k48.payloadBytes).toBe(15);
+
+  const k48WithTs = new Ksuid({ timestampSize: "48bit", timestamp: 1700000000000 });
+  expect(k48WithTs.timestampSize).toBe("48bit");
 });
 
 test("Ksuid supports Crockford Base32 encoding and options", () => {

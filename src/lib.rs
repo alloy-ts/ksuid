@@ -116,6 +116,21 @@ pub struct ToStringOptions {
   pub alphabet: Option<String>,
 }
 
+#[napi(object)]
+#[derive(Default)]
+pub struct KsuidOptions {
+  pub timestamp_size: Option<String>,
+  pub timestamp: Option<f64>,
+  pub payload: Option<Buffer>,
+  pub string: Option<String>,
+  pub bytes: Option<Buffer>,
+}
+
+enum KsuidInner {
+  Sec(RawKsuid),
+  Ms(RawKsuidMs),
+}
+
 #[napi]
 pub struct CrockfordBase32 {
   alphabet: [u8; 32],
@@ -202,38 +217,131 @@ impl CrockfordBase32 {
 
   #[napi]
   pub fn encode_ksuid(&self, ksuid: &Ksuid) -> String {
-    encode_crockford(ksuid.inner.bytes().as_ref(), &self.alphabet)
+    encode_crockford(ksuid.bytes().as_ref(), &self.alphabet)
   }
 }
 
 #[napi]
 pub struct Ksuid {
-  inner: RawKsuid,
+  inner: KsuidInner,
+}
+
+fn is_48bit_ts(size: Option<&str>) -> bool {
+  if let Some(s) = size {
+    let s_lower = s.trim().to_lowercase();
+    s_lower == "48bit" || s_lower == "48" || s_lower == "6" || s_lower == "6bytes" || s_lower == "48-bit"
+  } else {
+    false
+  }
+}
+
+fn create_ksuid_from_opts(opts: &KsuidOptions) -> Result<KsuidInner> {
+  let is_48 = is_48bit_ts(opts.timestamp_size.as_deref());
+
+  if let Some(ref s) = opts.string {
+    if s.len() == 32 {
+      let bytes = decode_crockford(s, DEFAULT_CROCKFORD_ALPHABET)?;
+      if bytes.len() != 20 {
+        return Err(Error::new(
+          Status::InvalidArg,
+          format!("Expected 20 bytes from Crockford Base32, got {}", bytes.len()),
+        ));
+      }
+      let mut arr = [0u8; 20];
+      arr.copy_from_slice(&bytes);
+      return if is_48 {
+        Ok(KsuidInner::Ms(RawKsuidMs::from_bytes(arr)))
+      } else {
+        Ok(KsuidInner::Sec(RawKsuid::from_bytes(arr)))
+      };
+    } else if is_48 {
+      let inner = RawKsuidMs::from_base62(s).map_err(|e| Error::new(Status::InvalidArg, e.to_string()))?;
+      return Ok(KsuidInner::Ms(inner));
+    } else {
+      let inner = RawKsuid::from_base62(s).map_err(|e| Error::new(Status::InvalidArg, e.to_string()))?;
+      return Ok(KsuidInner::Sec(inner));
+    }
+  }
+
+  if let Some(ref b) = opts.bytes {
+    let slice: &[u8] = b.as_ref();
+    if slice.len() != 20 {
+      return Err(Error::new(
+        Status::InvalidArg,
+        format!("Expected 20 bytes for Ksuid, got {}", slice.len()),
+      ));
+    }
+    let mut arr = [0u8; 20];
+    arr.copy_from_slice(slice);
+    return if is_48 {
+      Ok(KsuidInner::Ms(RawKsuidMs::from_bytes(arr)))
+    } else {
+      Ok(KsuidInner::Sec(RawKsuid::from_bytes(arr)))
+    };
+  }
+
+  let payload_ref = opts.payload.as_ref().map(|b| b.as_ref());
+
+  if is_48 {
+    let ms_val = opts.timestamp.map(|ts| {
+      if ts < 20_000_000_000.0 {
+        (ts * 1000.0) as i64
+      } else {
+        ts as i64
+      }
+    });
+    Ok(KsuidInner::Ms(RawKsuidMs::from_millis(ms_val, payload_ref)))
+  } else {
+    let sec_val = opts.timestamp.map(|ts| {
+      if ts > 20_000_000_000.0 {
+        (ts / 1000.0) as i64
+      } else {
+        ts as i64
+      }
+    });
+    Ok(KsuidInner::Sec(RawKsuid::from_seconds(sec_val, payload_ref)))
+  }
 }
 
 #[napi]
 impl Ksuid {
   #[napi(getter)]
-  pub fn payload_bytes() -> u32 {
-    16
+  pub fn payload_bytes(&self) -> u32 {
+    match &self.inner {
+      KsuidInner::Sec(_) => 16,
+      KsuidInner::Ms(_) => 15,
+    }
   }
 
   #[napi(getter)]
-  pub fn bytes_len() -> u32 {
+  pub fn bytes_len(&self) -> u32 {
     20
   }
 
   #[napi(getter)]
-  pub fn string_encoded_size() -> u32 {
+  pub fn string_encoded_size(&self) -> u32 {
     27
   }
 
+  #[napi(getter)]
+  pub fn timestamp_size(&self) -> String {
+    match &self.inner {
+      KsuidInner::Sec(_) => "32bit".to_string(),
+      KsuidInner::Ms(_) => "48bit".to_string(),
+    }
+  }
+
   #[napi(constructor)]
-  pub fn new(input: Option<Either<String, Buffer>>) -> Result<Self> {
+  pub fn new(
+    input: Option<Either3<String, Buffer, KsuidOptions>>,
+    options: Option<KsuidOptions>,
+  ) -> Result<Self> {
     if let Some(val) = input {
       match val {
-        Either::A(s) => {
-          let inner = if s.len() == 32 {
+        Either3::A(s) => {
+          let opts = options.unwrap_or_default();
+          let is_48 = is_48bit_ts(opts.timestamp_size.as_deref());
+          if s.len() == 32 {
             let bytes = decode_crockford(&s, DEFAULT_CROCKFORD_ALPHABET)?;
             if bytes.len() != 20 {
               return Err(Error::new(
@@ -243,13 +351,22 @@ impl Ksuid {
             }
             let mut arr = [0u8; 20];
             arr.copy_from_slice(&bytes);
-            RawKsuid::from_bytes(arr)
+            if is_48 {
+              Ok(Ksuid { inner: KsuidInner::Ms(RawKsuidMs::from_bytes(arr)) })
+            } else {
+              Ok(Ksuid { inner: KsuidInner::Sec(RawKsuid::from_bytes(arr)) })
+            }
+          } else if is_48 {
+            let inner = RawKsuidMs::from_base62(&s).map_err(|e| Error::new(Status::InvalidArg, e.to_string()))?;
+            Ok(Ksuid { inner: KsuidInner::Ms(inner) })
           } else {
-            svix_ksuid::Ksuid::from_base62(&s).map_err(|e| Error::new(Status::InvalidArg, e.to_string()))?
-          };
-          Ok(Ksuid { inner })
+            let inner = RawKsuid::from_base62(&s).map_err(|e| Error::new(Status::InvalidArg, e.to_string()))?;
+            Ok(Ksuid { inner: KsuidInner::Sec(inner) })
+          }
         }
-        Either::B(b) => {
+        Either3::B(b) => {
+          let opts = options.unwrap_or_default();
+          let is_48 = is_48bit_ts(opts.timestamp_size.as_deref());
           let slice: &[u8] = b.as_ref();
           if slice.len() != 20 {
             return Err(Error::new(
@@ -259,31 +376,42 @@ impl Ksuid {
           }
           let mut arr = [0u8; 20];
           arr.copy_from_slice(slice);
-          Ok(Ksuid {
-            inner: RawKsuid::from_bytes(arr),
-          })
+          if is_48 {
+            Ok(Ksuid { inner: KsuidInner::Ms(RawKsuidMs::from_bytes(arr)) })
+          } else {
+            Ok(Ksuid { inner: KsuidInner::Sec(RawKsuid::from_bytes(arr)) })
+          }
+        }
+        Either3::C(opts) => {
+          let inner = create_ksuid_from_opts(&opts)?;
+          Ok(Ksuid { inner })
         }
       }
+    } else if let Some(opts) = options {
+      let inner = create_ksuid_from_opts(&opts)?;
+      Ok(Ksuid { inner })
     } else {
       Ok(Ksuid {
-        inner: RawKsuid::now(None),
+        inner: KsuidInner::Sec(RawKsuid::now(None)),
       })
     }
   }
 
   #[napi(factory)]
-  pub fn now(payload: Option<Buffer>) -> Result<Self> {
-    let payload_ref = payload.as_ref().map(|b| b.as_ref());
-    Ok(Ksuid {
-      inner: RawKsuid::now(payload_ref),
-    })
+  pub fn now(payload: Option<Buffer>, options: Option<KsuidOptions>) -> Result<Self> {
+    let mut opts = options.unwrap_or_default();
+    if payload.is_some() {
+      opts.payload = payload;
+    }
+    let inner = create_ksuid_from_opts(&opts)?;
+    Ok(Ksuid { inner })
   }
 
   #[napi(factory)]
   pub fn from_seconds(seconds: Option<i64>, payload: Option<Buffer>) -> Result<Self> {
     let payload_ref = payload.as_ref().map(|b| b.as_ref());
     Ok(Ksuid {
-      inner: RawKsuid::from_seconds(seconds, payload_ref),
+      inner: KsuidInner::Sec(RawKsuid::from_seconds(seconds, payload_ref)),
     })
   }
 
@@ -295,7 +423,7 @@ impl Ksuid {
   #[napi(factory)]
   pub fn from_base62(base62: String) -> Result<Self> {
     let inner = RawKsuid::from_base62(&base62).map_err(|e| Error::new(Status::InvalidArg, e.to_string()))?;
-    Ok(Ksuid { inner })
+    Ok(Ksuid { inner: KsuidInner::Sec(inner) })
   }
 
   #[napi(factory)]
@@ -316,7 +444,7 @@ impl Ksuid {
     let mut arr = [0u8; 20];
     arr.copy_from_slice(&vec);
     Ok(Ksuid {
-      inner: RawKsuid::from_bytes(arr),
+      inner: KsuidInner::Sec(RawKsuid::from_bytes(arr)),
     })
   }
 
@@ -337,24 +465,30 @@ impl Ksuid {
     let mut arr = [0u8; 20];
     arr.copy_from_slice(slice);
     Ok(Ksuid {
-      inner: RawKsuid::from_bytes(arr),
+      inner: KsuidInner::Sec(RawKsuid::from_bytes(arr)),
     })
   }
 
   #[napi]
   pub fn is_valid(base62: String) -> bool {
-    RawKsuid::from_base62(&base62).is_ok()
+    RawKsuid::from_base62(&base62).is_ok() || RawKsuidMs::from_base62(&base62).is_ok()
   }
 
   #[napi]
   pub fn to_base62(&self) -> String {
-    self.inner.to_string()
+    match &self.inner {
+      KsuidInner::Sec(k) => k.to_string(),
+      KsuidInner::Ms(k) => k.to_string(),
+    }
   }
 
   #[napi]
   pub fn to_crockford_base32(&self, alphabet: Option<String>) -> Result<String> {
     let alph = parse_alphabet(alphabet)?;
-    Ok(encode_crockford(self.inner.bytes().as_ref(), &alph))
+    match &self.inner {
+      KsuidInner::Sec(k) => Ok(encode_crockford(k.bytes().as_ref(), &alph)),
+      KsuidInner::Ms(k) => Ok(encode_crockford(k.bytes().as_ref(), &alph)),
+    }
   }
 
   #[napi]
@@ -370,7 +504,7 @@ impl Ksuid {
           if enc == "base32" || enc == "crockford" {
             self.to_crockford_base32(None)
           } else {
-            Ok(self.inner.to_string())
+            Ok(self.to_base62())
           }
         }
         Either::B(opt_obj) => {
@@ -378,44 +512,51 @@ impl Ksuid {
           if enc == "base32" || enc == "crockford" {
             self.to_crockford_base32(opt_obj.alphabet)
           } else {
-            Ok(self.inner.to_string())
+            Ok(self.to_base62())
           }
         }
       }
     } else {
-      Ok(self.inner.to_string())
+      Ok(self.to_base62())
     }
   }
 
   #[napi]
   pub fn bytes(&self) -> Buffer {
-    Buffer::from(self.inner.bytes().as_ref())
-  }
-
-  #[napi]
-  pub fn payload(&self) -> Buffer {
-    Buffer::from(self.inner.payload().as_ref())
-  }
-
-  #[napi]
-  pub fn timestamp_seconds(&self) -> i64 {
-    self.inner.timestamp_seconds()
-  }
-
-  #[napi]
-  pub fn compare(&self, other: &Ksuid) -> i32 {
-    if self.inner < other.inner {
-      -1
-    } else if self.inner > other.inner {
-      1
-    } else {
-      0
+    match &self.inner {
+      KsuidInner::Sec(k) => Buffer::from(k.bytes().as_ref()),
+      KsuidInner::Ms(k) => Buffer::from(k.bytes().as_ref()),
     }
   }
 
   #[napi]
+  pub fn payload(&self) -> Buffer {
+    match &self.inner {
+      KsuidInner::Sec(k) => Buffer::from(k.payload().as_ref()),
+      KsuidInner::Ms(k) => Buffer::from(k.payload().as_ref()),
+    }
+  }
+
+  #[napi]
+  pub fn timestamp_seconds(&self) -> i64 {
+    match &self.inner {
+      KsuidInner::Sec(k) => k.timestamp_seconds(),
+      KsuidInner::Ms(k) => k.timestamp_seconds(),
+    }
+  }
+
+  #[napi]
+  pub fn compare(&self, other: &Ksuid) -> i32 {
+    let b1 = self.bytes();
+    let b2 = other.bytes();
+    b1.as_ref().cmp(b2.as_ref()) as i32
+  }
+
+  #[napi]
   pub fn equals(&self, other: &Ksuid) -> bool {
-    self.inner == other.inner
+    let b1 = self.bytes();
+    let b2 = other.bytes();
+    b1.as_ref() == b2.as_ref()
   }
 }
 

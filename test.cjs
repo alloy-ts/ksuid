@@ -8,6 +8,23 @@ void test("Ksuid - creation and base62", () => {
   assert.equal(typeof ksuid.toBase62(), "string");
   assert.equal(ksuid.toBase62().length, 27);
   assert.equal(ksuid.toString(), ksuid.toBase62());
+  assert.equal(ksuid.timestampSize, "32bit");
+});
+
+void test("Ksuid - timestampSize option (32bit vs 48bit)", () => {
+  const ksuid32 = new Ksuid({ timestampSize: "32bit" });
+  assert.equal(ksuid32.timestampSize, "32bit");
+  assert.equal(ksuid32.payloadBytes, 16);
+
+  const ksuid48 = new Ksuid({ timestampSize: "48bit" });
+  assert.equal(ksuid48.timestampSize, "48bit");
+  assert.equal(ksuid48.payloadBytes, 15);
+
+  const ksuidCustomTs = new Ksuid({
+    timestampSize: "48bit",
+    timestamp: 1700000000000,
+  });
+  assert.equal(ksuidCustomTs.timestampSize, "48bit");
 });
 
 void test("Ksuid - Crockford Base32 encoding and options", () => {
