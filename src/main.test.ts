@@ -1,5 +1,5 @@
 import { expect, test } from "vite-plus/test";
-import { CrockfordBase32, Ksuid, KsuidMs } from "./main.ts";
+import { Base36, CrockfordBase32, Ksuid, KsuidMs } from "./main.ts";
 
 test("Ksuid creates valid base62 string", () => {
   const ksuid = Ksuid.now();
@@ -38,6 +38,32 @@ test("Ksuid constructor options { enc: 'base32', alphabet, timestampSize }", () 
   const str = ksuid.toString();
   expect(str.length).toBe(32);
   expect(ksuid.toCrockfordBase32(customAlph)).toBe(str);
+});
+
+test("Ksuid supports Base36 encoding", () => {
+  const ksuid = new Ksuid({ enc: "base36" });
+  expect(ksuid.enc).toBe("base36");
+  const str = ksuid.toString();
+  expect(typeof str).toBe("string");
+
+  const k2 = Ksuid.fromBase36(str);
+  expect(k2.toBase62()).toBe(ksuid.toBase62());
+});
+
+test("Base36 128-bit reference test vectors", () => {
+  const zeroBytes = Buffer.alloc(16);
+  expect(Base36.encode128(zeroBytes)).toBe("0000000000000000000000000");
+
+  const vec1 = Buffer.from([
+    0x01, 0x7f, 0xee, 0x7f, 0xef, 0x41, 0x7e, 0x2b, 0x34, 0x32, 0xac, 0x2e, 0xc5, 0x53, 0x68, 0x7c,
+  ]);
+  expect(Base36.encode128(vec1)).toBe("0372hg16csmsm50l8dikcvukc");
+
+  const dec1 = Base36.decode128("0372hg16csmsm50l8dikcvukc");
+  expect(Array.from(dec1)).toEqual(Array.from(vec1));
+
+  const maxBytes = Buffer.alloc(16, 0xff);
+  expect(Base36.encode128(maxBytes)).toBe("f5lxx1zz5pnorynqglhzmsp33");
 });
 
 test("Ksuid supports Crockford Base32 encoding and options", () => {

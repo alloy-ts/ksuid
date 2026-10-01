@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { Ksuid, KsuidMs, CrockfordBase32 } = require("./dist/index.js");
+const { Ksuid, KsuidMs, CrockfordBase32, Base36 } = require("./dist/index.js");
 
 void test("Ksuid - creation and base62", () => {
   const ksuid = Ksuid.now();
@@ -40,6 +40,32 @@ void test("Ksuid - constructor options { enc: 'base32', alphabet, timestampSize 
   const str = ksuid.toString();
   assert.equal(str.length, 32);
   assert.equal(ksuid.toCrockfordBase32(customAlph), str);
+});
+
+void test("Ksuid - Base36 encoding and options", () => {
+  const ksuid = new Ksuid({ enc: "base36" });
+  assert.equal(ksuid.enc, "base36");
+  const b36 = ksuid.toString();
+  assert.equal(typeof b36, "string");
+
+  const ksuidFromB36 = Ksuid.fromBase36(b36);
+  assert.equal(ksuidFromB36.toBase62(), ksuid.toBase62());
+});
+
+void test("Base36 utility and 128-bit test vectors", () => {
+  const zeroBytes = Buffer.alloc(16);
+  assert.equal(Base36.encode128(zeroBytes), "0000000000000000000000000");
+
+  const testVec1 = Buffer.from([
+    0x01, 0x7f, 0xee, 0x7f, 0xef, 0x41, 0x7e, 0x2b, 0x34, 0x32, 0xac, 0x2e, 0xc5, 0x53, 0x68, 0x7c,
+  ]);
+  assert.equal(Base36.encode128(testVec1), "0372hg16csmsm50l8dikcvukc");
+
+  const decoded1 = Base36.decode128("0372hg16csmsm50l8dikcvukc");
+  assert.deepEqual(Array.from(decoded1), Array.from(testVec1));
+
+  const maxBytes = Buffer.alloc(16, 0xff);
+  assert.equal(Base36.encode128(maxBytes), "f5lxx1zz5pnorynqglhzmsp33");
 });
 
 void test("Ksuid - Crockford Base32 encoding and options", () => {
