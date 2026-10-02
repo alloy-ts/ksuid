@@ -2,8 +2,79 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use svix_ksuid::{Ksuid as RawKsuid, KsuidMs as RawKsuidMs, KsuidLike};
 
+pub const DEFAULT_BASE62_ALPHABET: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+pub const DEFAULT_BASE36_ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
 pub const DEFAULT_CROCKFORD_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-pub const BASE36_DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+
+pub fn parse_base62_alphabet(alphabet: Option<String>) -> Result<[u8; 62]> {
+  if let Some(a) = alphabet {
+    let bytes = a.as_bytes();
+    if bytes.len() != 62 {
+      return Err(Error::new(
+        Status::InvalidArg,
+        format!("Base62 alphabet must be exactly 62 characters, got {}", bytes.len()),
+      ));
+    }
+    let mut arr = [0u8; 62];
+    arr.copy_from_slice(bytes);
+    Ok(arr)
+  } else {
+    Ok(*DEFAULT_BASE62_ALPHABET)
+  }
+}
+
+pub fn parse_base36_alphabet(alphabet: Option<String>) -> Result<[u8; 36]> {
+  if let Some(a) = alphabet {
+    let bytes = a.as_bytes();
+    if bytes.len() != 36 {
+      return Err(Error::new(
+        Status::InvalidArg,
+        format!("Base36 alphabet must be exactly 36 characters, got {}", bytes.len()),
+      ));
+    }
+    let mut arr = [0u8; 36];
+    arr.copy_from_slice(bytes);
+    Ok(arr)
+  } else {
+    Ok(*DEFAULT_BASE36_ALPHABET)
+  }
+}
+
+pub fn parse_crockford_alphabet(alphabet: Option<String>) -> Result<[u8; 32]> {
+  if let Some(a) = alphabet {
+    let bytes = a.as_bytes();
+    if bytes.len() != 32 {
+      return Err(Error::new(
+        Status::InvalidArg,
+        format!("Crockford Base32 alphabet must be exactly 32 characters, got {}", bytes.len()),
+      ));
+    }
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(bytes);
+    Ok(arr)
+  } else {
+    Ok(*DEFAULT_CROCKFORD_ALPHABET)
+  }
+}
+
+pub fn shuffle_alphabet_bytes_with_seed(base_alphabet: &[u8], seed: &str) -> String {
+  let mut bytes = base_alphabet.to_vec();
+  let len = bytes.len();
+  if len == 0 {
+    return String::new();
+  }
+  let mut hash: u64 = 5381;
+  for b in seed.bytes() {
+    hash = hash.wrapping_mul(33).wrapping_add(b as u64);
+  }
+  let mut rng_state = hash;
+  for i in (1..len).rev() {
+    rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let j = (rng_state >> 32) as usize % (i + 1);
+    bytes.swap(i, j);
+  }
+  String::from_utf8(bytes).unwrap()
+}
 
 pub fn convert_base(
   in_digits: &[u8],
@@ -63,40 +134,68 @@ pub fn convert_base(
   Ok(out)
 }
 
-pub fn encode_base36_bytes(bytes: &[u8]) -> String {
+pub fn encode_base62_bytes(bytes: &[u8], alphabet: &[u8; 62]) -> String {
   if bytes.is_empty() {
     return String::new();
   }
-  // Calculate digits needed: ceil(bytes.len() * 8 / log2(36))
-  let out_len = ((bytes.len() as f64) * 8.0 / (36.0f64).log2()).ceil() as usize;
-  let digit_values = convert_base(bytes, 256, out_len, 36).unwrap_or_else(|_| vec![0; out_len]);
+  let out_len = ((bytes.len() as f64) * 8.0 / (62.0f64).log2()).ceil() as usize;
+  let digit_values = convert_base(bytes, 256, out_len, 62).unwrap_or_else(|_| vec![0; out_len]);
   let mut result = String::with_capacity(out_len);
   for d in digit_values {
-    result.push(BASE36_DIGITS[d as usize] as char);
+    result.push(alphabet[d as usize] as char);
   }
   result
 }
 
-pub fn decode_base36_bytes(text: &str, expected_len: usize) -> Result<Vec<u8>> {
-  static DECODE_MAP: [u8; 256] = {
-    let mut map = [255u8; 256];
-    let mut i = 0usize;
-    while i < 10 {
-      map[(b'0' + i as u8) as usize] = i as u8;
-      i += 1;
-    }
-    i = 0;
-    while i < 26 {
-      map[(b'a' + i as u8) as usize] = (10 + i) as u8;
-      map[(b'A' + i as u8) as usize] = (10 + i) as u8;
-      i += 1;
-    }
-    map
-  };
+pub fn decode_base62_bytes(text: &str, expected_len: usize, alphabet: &[u8; 62]) -> Result<Vec<u8>> {
+  let mut char_map = [255u8; 256];
+  for (i, &b) in alphabet.iter().enumerate() {
+    char_map[b as usize] = i as u8;
+  }
 
   let mut digit_values = Vec::with_capacity(text.len());
   for byte in text.bytes() {
-    let val = DECODE_MAP[byte as usize];
+    let val = char_map[byte as usize];
+    if val == 255 {
+      return Err(Error::new(
+        Status::InvalidArg,
+        format!("Invalid Base62 character: '{}'", byte as char),
+      ));
+    }
+    digit_values.push(val);
+  }
+
+  convert_base(&digit_values, 62, expected_len, 256)
+}
+
+pub fn encode_base36_bytes(bytes: &[u8], alphabet: &[u8; 36]) -> String {
+  if bytes.is_empty() {
+    return String::new();
+  }
+  let out_len = ((bytes.len() as f64) * 8.0 / (36.0f64).log2()).ceil() as usize;
+  let digit_values = convert_base(bytes, 256, out_len, 36).unwrap_or_else(|_| vec![0; out_len]);
+  let mut result = String::with_capacity(out_len);
+  for d in digit_values {
+    result.push(alphabet[d as usize] as char);
+  }
+  result
+}
+
+pub fn decode_base36_bytes(text: &str, expected_len: usize, alphabet: &[u8; 36]) -> Result<Vec<u8>> {
+  let mut char_map = [255u8; 256];
+  for (i, &b) in alphabet.iter().enumerate() {
+    char_map[b as usize] = i as u8;
+    let ch = b as char;
+    if ch.is_ascii_uppercase() {
+      char_map[ch.to_ascii_lowercase() as usize] = i as u8;
+    } else if ch.is_ascii_lowercase() {
+      char_map[ch.to_ascii_uppercase() as usize] = i as u8;
+    }
+  }
+
+  let mut digit_values = Vec::with_capacity(text.len());
+  for byte in text.bytes() {
+    let val = char_map[byte as usize];
     if val == 255 {
       return Err(Error::new(
         Status::InvalidArg,
@@ -107,38 +206,6 @@ pub fn decode_base36_bytes(text: &str, expected_len: usize) -> Result<Vec<u8>> {
   }
 
   convert_base(&digit_values, 36, expected_len, 256)
-}
-
-fn parse_alphabet(alphabet: Option<String>) -> Result<[u8; 32]> {
-  if let Some(a) = alphabet {
-    let bytes = a.as_bytes();
-    if bytes.len() != 32 {
-      return Err(Error::new(
-        Status::InvalidArg,
-        format!("Alphabet must be exactly 32 characters, got {}", bytes.len()),
-      ));
-    }
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(bytes);
-    Ok(arr)
-  } else {
-    Ok(*DEFAULT_CROCKFORD_ALPHABET)
-  }
-}
-
-pub fn shuffle_alphabet_with_seed(seed: &str) -> String {
-  let mut bytes = *DEFAULT_CROCKFORD_ALPHABET;
-  let mut hash: u64 = 5381;
-  for b in seed.bytes() {
-    hash = hash.wrapping_mul(33).wrapping_add(b as u64);
-  }
-  let mut rng_state = hash;
-  for i in (1..32).rev() {
-    rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-    let j = (rng_state >> 32) as usize % (i + 1);
-    bytes.swap(i, j);
-  }
-  String::from_utf8(bytes.to_vec()).unwrap()
 }
 
 pub fn encode_crockford(bytes: &[u8], alphabet: &[u8; 32]) -> String {
@@ -214,6 +281,65 @@ pub fn decode_crockford(input: &str, alphabet: &[u8; 32]) -> Result<Vec<u8>> {
   Ok(bytes)
 }
 
+fn encode_number_with_alphabet(num: i64, alphabet: &[u8], base: u64) -> String {
+  let mut n = num as u64;
+  if n == 0 {
+    return (alphabet[0] as char).to_string();
+  }
+  let mut chars = Vec::new();
+  while n > 0 {
+    let index = (n % base) as usize;
+    chars.push(alphabet[index] as char);
+    n /= base;
+  }
+  chars.into_iter().rev().collect()
+}
+
+fn decode_number_with_alphabet(
+  input: &str,
+  alphabet: &[u8],
+  base: u64,
+  case_insensitive: bool,
+) -> Result<i64> {
+  let mut char_map = [255u8; 256];
+  for (i, &b) in alphabet.iter().enumerate() {
+    char_map[b as usize] = i as u8;
+    if case_insensitive {
+      let ch = b as char;
+      if ch.is_ascii_uppercase() {
+        char_map[ch.to_ascii_lowercase() as usize] = i as u8;
+      } else if ch.is_ascii_lowercase() {
+        char_map[ch.to_ascii_uppercase() as usize] = i as u8;
+      }
+    }
+  }
+
+  if alphabet == DEFAULT_CROCKFORD_ALPHABET {
+    char_map[b'O' as usize] = char_map[b'0' as usize];
+    char_map[b'o' as usize] = char_map[b'0' as usize];
+    char_map[b'I' as usize] = char_map[b'1' as usize];
+    char_map[b'i' as usize] = char_map[b'1' as usize];
+    char_map[b'L' as usize] = char_map[b'1' as usize];
+    char_map[b'l' as usize] = char_map[b'1' as usize];
+  }
+
+  let mut n: u64 = 0;
+  for byte in input.bytes() {
+    if byte == b'-' || byte == b' ' {
+      continue;
+    }
+    let val = char_map[byte as usize];
+    if val == 255 {
+      return Err(Error::new(
+        Status::InvalidArg,
+        format!("Invalid character: '{}'", byte as char),
+      ));
+    }
+    n = n * base + (val as u64);
+  }
+  Ok(n as i64)
+}
+
 #[napi(object)]
 #[derive(Default)]
 pub struct ToStringOptions {
@@ -239,24 +365,103 @@ enum KsuidInner {
 }
 
 #[napi]
-pub struct Base36 {}
+pub struct Base62 {
+  alphabet: [u8; 62],
+}
 
 #[napi]
-impl Base36 {
+impl Base62 {
   #[napi]
-  pub fn encode(bytes: Buffer) -> String {
-    encode_base36_bytes(bytes.as_ref())
+  pub fn default_alphabet() -> String {
+    String::from_utf8(DEFAULT_BASE62_ALPHABET.to_vec()).unwrap()
+  }
+
+  #[napi(constructor)]
+  pub fn new(alphabet: Option<String>) -> Result<Self> {
+    let alph = parse_base62_alphabet(alphabet)?;
+    Ok(Base62 { alphabet: alph })
   }
 
   #[napi]
-  pub fn decode(input: String, expected_len: Option<u32>) -> Result<Buffer> {
+  pub fn shuffle_alphabet(seed: Either<String, f64>, custom_alphabet: Option<String>) -> Result<String> {
+    let seed_str = match seed {
+      Either::A(s) => s,
+      Either::B(n) => n.to_string(),
+    };
+    let base_alph = parse_base62_alphabet(custom_alphabet)?;
+    Ok(shuffle_alphabet_bytes_with_seed(&base_alph, &seed_str))
+  }
+
+  #[napi]
+  pub fn encode(&self, bytes: Buffer) -> String {
+    encode_base62_bytes(bytes.as_ref(), &self.alphabet)
+  }
+
+  #[napi]
+  pub fn decode(&self, input: String, expected_len: Option<u32>) -> Result<Buffer> {
     let len = expected_len.unwrap_or(20) as usize;
-    let vec = decode_base36_bytes(&input, len)?;
+    let vec = decode_base62_bytes(&input, len, &self.alphabet)?;
     Ok(Buffer::from(vec))
   }
 
   #[napi]
-  pub fn encode_128(bytes: Buffer) -> Result<String> {
+  pub fn encode_number(&self, num: i64) -> String {
+    encode_number_with_alphabet(num, &self.alphabet, 62)
+  }
+
+  #[napi]
+  pub fn decode_number(&self, input: String) -> Result<i64> {
+    decode_number_with_alphabet(&input, &self.alphabet, 62, false)
+  }
+
+  #[napi]
+  pub fn encode_ksuid(&self, ksuid: &Ksuid) -> String {
+    encode_base62_bytes(ksuid.bytes().as_ref(), &self.alphabet)
+  }
+}
+
+#[napi]
+pub struct Base36 {
+  alphabet: [u8; 36],
+}
+
+#[napi]
+impl Base36 {
+  #[napi]
+  pub fn default_alphabet() -> String {
+    String::from_utf8(DEFAULT_BASE36_ALPHABET.to_vec()).unwrap()
+  }
+
+  #[napi(constructor)]
+  pub fn new(alphabet: Option<String>) -> Result<Self> {
+    let alph = parse_base36_alphabet(alphabet)?;
+    Ok(Base36 { alphabet: alph })
+  }
+
+  #[napi]
+  pub fn shuffle_alphabet(seed: Either<String, f64>, custom_alphabet: Option<String>) -> Result<String> {
+    let seed_str = match seed {
+      Either::A(s) => s,
+      Either::B(n) => n.to_string(),
+    };
+    let base_alph = parse_base36_alphabet(custom_alphabet)?;
+    Ok(shuffle_alphabet_bytes_with_seed(&base_alph, &seed_str))
+  }
+
+  #[napi]
+  pub fn encode(&self, bytes: Buffer) -> String {
+    encode_base36_bytes(bytes.as_ref(), &self.alphabet)
+  }
+
+  #[napi]
+  pub fn decode(&self, input: String, expected_len: Option<u32>) -> Result<Buffer> {
+    let len = expected_len.unwrap_or(20) as usize;
+    let vec = decode_base36_bytes(&input, len, &self.alphabet)?;
+    Ok(Buffer::from(vec))
+  }
+
+  #[napi]
+  pub fn encode_128(&self, bytes: Buffer) -> Result<String> {
     let slice = bytes.as_ref();
     if slice.len() != 16 {
       return Err(Error::new(
@@ -264,12 +469,58 @@ impl Base36 {
         format!("Expected 16 bytes for 128-bit Base36, got {}", slice.len()),
       ));
     }
-    Ok(encode_base36_bytes(slice))
+    Ok(encode_base36_bytes(slice, &self.alphabet))
   }
 
   #[napi]
-  pub fn decode_128(input: String) -> Result<Buffer> {
-    let vec = decode_base36_bytes(&input, 16)?;
+  pub fn decode_128(&self, input: String) -> Result<Buffer> {
+    let vec = decode_base36_bytes(&input, 16, &self.alphabet)?;
+    Ok(Buffer::from(vec))
+  }
+
+  #[napi]
+  pub fn encode_number(&self, num: i64) -> String {
+    encode_number_with_alphabet(num, &self.alphabet, 36)
+  }
+
+  #[napi]
+  pub fn decode_number(&self, input: String) -> Result<i64> {
+    decode_number_with_alphabet(&input, &self.alphabet, 36, true)
+  }
+
+  #[napi]
+  pub fn encode_ksuid(&self, ksuid: &Ksuid) -> String {
+    encode_base36_bytes(ksuid.bytes().as_ref(), &self.alphabet)
+  }
+
+  // Static methods for backward compatibility without instance instantiation
+  #[napi(js_name = "encode")]
+  pub fn static_encode(bytes: Buffer) -> String {
+    encode_base36_bytes(bytes.as_ref(), DEFAULT_BASE36_ALPHABET)
+  }
+
+  #[napi(js_name = "decode")]
+  pub fn static_decode(input: String, expected_len: Option<u32>) -> Result<Buffer> {
+    let len = expected_len.unwrap_or(20) as usize;
+    let vec = decode_base36_bytes(&input, len, DEFAULT_BASE36_ALPHABET)?;
+    Ok(Buffer::from(vec))
+  }
+
+  #[napi(js_name = "encode128")]
+  pub fn static_encode_128(bytes: Buffer) -> Result<String> {
+    let slice = bytes.as_ref();
+    if slice.len() != 16 {
+      return Err(Error::new(
+        Status::InvalidArg,
+        format!("Expected 16 bytes for 128-bit Base36, got {}", slice.len()),
+      ));
+    }
+    Ok(encode_base36_bytes(slice, DEFAULT_BASE36_ALPHABET))
+  }
+
+  #[napi(js_name = "decode128")]
+  pub fn static_decode_128(input: String) -> Result<Buffer> {
+    let vec = decode_base36_bytes(&input, 16, DEFAULT_BASE36_ALPHABET)?;
     Ok(Buffer::from(vec))
   }
 }
@@ -288,19 +539,20 @@ impl CrockfordBase32 {
 
   #[napi(constructor)]
   pub fn new(alphabet: Option<String>) -> Result<Self> {
-    let alphabet_bytes = parse_alphabet(alphabet)?;
+    let alphabet_bytes = parse_crockford_alphabet(alphabet)?;
     Ok(CrockfordBase32 {
       alphabet: alphabet_bytes,
     })
   }
 
   #[napi]
-  pub fn shuffle_alphabet(seed: Either<String, f64>) -> String {
+  pub fn shuffle_alphabet(seed: Either<String, f64>, custom_alphabet: Option<String>) -> Result<String> {
     let seed_str = match seed {
       Either::A(s) => s,
       Either::B(n) => n.to_string(),
     };
-    shuffle_alphabet_with_seed(&seed_str)
+    let base_alph = parse_crockford_alphabet(custom_alphabet)?;
+    Ok(shuffle_alphabet_bytes_with_seed(&base_alph, &seed_str))
   }
 
   #[napi]
@@ -316,46 +568,12 @@ impl CrockfordBase32 {
 
   #[napi]
   pub fn encode_number(&self, num: i64) -> String {
-    let mut n = num as u64;
-    if n == 0 {
-      return (self.alphabet[0] as char).to_string();
-    }
-    let mut chars = Vec::new();
-    while n > 0 {
-      let index = (n & 0x1f) as usize;
-      chars.push(self.alphabet[index] as char);
-      n >>= 5;
-    }
-    chars.into_iter().rev().collect()
+    encode_number_with_alphabet(num, &self.alphabet, 32)
   }
 
   #[napi]
   pub fn decode_number(&self, input: String) -> Result<i64> {
-    let mut char_map = [255u8; 256];
-    for (i, &b) in self.alphabet.iter().enumerate() {
-      char_map[b as usize] = i as u8;
-      let ch = b as char;
-      if ch.is_ascii_uppercase() {
-        char_map[ch.to_ascii_lowercase() as usize] = i as u8;
-      } else if ch.is_ascii_lowercase() {
-        char_map[ch.to_ascii_uppercase() as usize] = i as u8;
-      }
-    }
-    let mut n: u64 = 0;
-    for byte in input.bytes() {
-      if byte == b'-' || byte == b' ' {
-        continue;
-      }
-      let val = char_map[byte as usize];
-      if val == 255 {
-        return Err(Error::new(
-          Status::InvalidArg,
-          format!("Invalid Crockford Base32 character: '{}'", byte as char),
-        ));
-      }
-      n = (n << 5) | (val as u64);
-    }
-    Ok(n as i64)
+    decode_number_with_alphabet(&input, &self.alphabet, 32, true)
   }
 
   #[napi]
@@ -392,28 +610,31 @@ fn create_ksuid_from_opts(opts: &KsuidOptions) -> Result<(KsuidInner, &'static s
   let is_ms = ts_kind == "48bit" || ts_kind == "64bit";
 
   if let Some(ref s) = opts.string {
-    if s.len() == 32 {
-      let bytes = decode_crockford(s, DEFAULT_CROCKFORD_ALPHABET)?;
-      if bytes.len() != 20 {
-        return Err(Error::new(
-          Status::InvalidArg,
-          format!("Expected 20 bytes from Crockford Base32, got {}", bytes.len()),
-        ));
-      }
-      let mut arr = [0u8; 20];
-      arr.copy_from_slice(&bytes);
-      return if is_ms {
-        Ok((KsuidInner::Ms(RawKsuidMs::from_bytes(arr)), ts_kind))
-      } else {
-        Ok((KsuidInner::Sec(RawKsuid::from_bytes(arr)), ts_kind))
-      };
-    } else if is_ms {
-      let inner = RawKsuidMs::from_base62(s).map_err(|e| Error::new(Status::InvalidArg, e.to_string()))?;
-      return Ok((KsuidInner::Ms(inner), ts_kind));
+    let enc_mode = opts.enc.as_deref().unwrap_or("base62");
+    let bytes = if enc_mode == "base32" || enc_mode == "crockford" || (enc_mode == "base62" && s.len() == 32) {
+      let alph = parse_crockford_alphabet(opts.alphabet.clone())?;
+      decode_crockford(s, &alph)?
+    } else if enc_mode == "base36" {
+      let alph = parse_base36_alphabet(opts.alphabet.clone())?;
+      decode_base36_bytes(s, 20, &alph)?
     } else {
-      let inner = RawKsuid::from_base62(s).map_err(|e| Error::new(Status::InvalidArg, e.to_string()))?;
-      return Ok((KsuidInner::Sec(inner), ts_kind));
+      let alph = parse_base62_alphabet(opts.alphabet.clone())?;
+      decode_base62_bytes(s, 20, &alph)?
+    };
+
+    if bytes.len() != 20 {
+      return Err(Error::new(
+        Status::InvalidArg,
+        format!("Expected 20 bytes from string, got {}", bytes.len()),
+      ));
     }
+    let mut arr = [0u8; 20];
+    arr.copy_from_slice(&bytes);
+    return if is_ms {
+      Ok((KsuidInner::Ms(RawKsuidMs::from_bytes(arr)), ts_kind))
+    } else {
+      Ok((KsuidInner::Sec(RawKsuid::from_bytes(arr)), ts_kind))
+    };
   }
 
   if let Some(ref b) = opts.bytes {
@@ -473,7 +694,11 @@ impl Ksuid {
 
   #[napi(getter)]
   pub fn string_encoded_size(&self) -> u32 {
-    27
+    match self.enc.as_str() {
+      "base32" | "crockford" => 32,
+      "base36" => 25,
+      _ => 27,
+    }
   }
 
   #[napi(getter)]
@@ -504,32 +729,37 @@ impl Ksuid {
           let opts = options.unwrap_or_default();
           let ts_kind = parse_ts_size(opts.timestamp_size.as_deref());
           let is_ms = ts_kind == "48bit" || ts_kind == "64bit";
-          let inner = if s.len() == 32 {
-            let bytes = decode_crockford(&s, DEFAULT_CROCKFORD_ALPHABET)?;
-            if bytes.len() != 20 {
-              return Err(Error::new(
-                Status::InvalidArg,
-                format!("Expected 20 bytes from Crockford Base32, got {}", bytes.len()),
-              ));
-            }
-            let mut arr = [0u8; 20];
-            arr.copy_from_slice(&bytes);
-            if is_ms {
-              KsuidInner::Ms(RawKsuidMs::from_bytes(arr))
-            } else {
-              KsuidInner::Sec(RawKsuid::from_bytes(arr))
-            }
-          } else if is_ms {
-            let inner = RawKsuidMs::from_base62(&s).map_err(|e| Error::new(Status::InvalidArg, e.to_string()))?;
-            KsuidInner::Ms(inner)
+          let enc_mode = opts.enc.as_deref().unwrap_or(enc.as_str());
+
+          let bytes = if enc_mode == "base32" || enc_mode == "crockford" || (enc_mode == "base62" && s.len() == 32) {
+            let alph = parse_crockford_alphabet(opts.alphabet.clone().or_else(|| alphabet.clone()))?;
+            decode_crockford(&s, &alph)?
+          } else if enc_mode == "base36" {
+            let alph = parse_base36_alphabet(opts.alphabet.clone().or_else(|| alphabet.clone()))?;
+            decode_base36_bytes(&s, 20, &alph)?
           } else {
-            let inner = RawKsuid::from_base62(&s).map_err(|e| Error::new(Status::InvalidArg, e.to_string()))?;
-            KsuidInner::Sec(inner)
+            let alph = parse_base62_alphabet(opts.alphabet.clone().or_else(|| alphabet.clone()))?;
+            decode_base62_bytes(&s, 20, &alph)?
           };
+
+          if bytes.len() != 20 {
+            return Err(Error::new(
+              Status::InvalidArg,
+              format!("Expected 20 bytes from string, got {}", bytes.len()),
+            ));
+          }
+          let mut arr = [0u8; 20];
+          arr.copy_from_slice(&bytes);
+          let inner = if is_ms {
+            KsuidInner::Ms(RawKsuidMs::from_bytes(arr))
+          } else {
+            KsuidInner::Sec(RawKsuid::from_bytes(arr))
+          };
+
           Ok(Ksuid {
             inner,
             enc,
-            alphabet,
+            alphabet: opts.alphabet.or(alphabet),
             ts_size_str: ts_kind.to_string(),
           })
         }
@@ -554,7 +784,7 @@ impl Ksuid {
           Ok(Ksuid {
             inner,
             enc,
-            alphabet,
+            alphabet: opts.alphabet.or(alphabet),
             ts_size_str: ts_kind.to_string(),
           })
         }
@@ -632,37 +862,41 @@ impl Ksuid {
   }
 
   #[napi(factory)]
-  pub fn from_base62(base62: String) -> Result<Self> {
-    let inner = RawKsuid::from_base62(&base62).map_err(|e| Error::new(Status::InvalidArg, e.to_string()))?;
+  pub fn from_base62(base62: String, alphabet: Option<String>) -> Result<Self> {
+    let alph = parse_base62_alphabet(alphabet.clone())?;
+    let vec = decode_base62_bytes(&base62, 20, &alph)?;
+    let mut arr = [0u8; 20];
+    arr.copy_from_slice(&vec);
     Ok(Ksuid {
-      inner: KsuidInner::Sec(inner),
+      inner: KsuidInner::Sec(RawKsuid::from_bytes(arr)),
       enc: "base62".to_string(),
-      alphabet: None,
+      alphabet,
       ts_size_str: "32bit".to_string(),
     })
   }
 
   #[napi(factory)]
-  pub fn from_str(base62: String) -> Result<Self> {
-    Self::from_base62(base62)
+  pub fn from_str(base62: String, alphabet: Option<String>) -> Result<Self> {
+    Self::from_base62(base62, alphabet)
   }
 
   #[napi(factory)]
-  pub fn from_base36(encoded: String) -> Result<Self> {
-    let vec = decode_base36_bytes(&encoded, 20)?;
+  pub fn from_base36(encoded: String, alphabet: Option<String>) -> Result<Self> {
+    let alph = parse_base36_alphabet(alphabet.clone())?;
+    let vec = decode_base36_bytes(&encoded, 20, &alph)?;
     let mut arr = [0u8; 20];
     arr.copy_from_slice(&vec);
     Ok(Ksuid {
       inner: KsuidInner::Sec(RawKsuid::from_bytes(arr)),
       enc: "base36".to_string(),
-      alphabet: None,
+      alphabet,
       ts_size_str: "32bit".to_string(),
     })
   }
 
   #[napi(factory)]
   pub fn from_crockford_base32(encoded: String, alphabet: Option<String>) -> Result<Self> {
-    let alph = parse_alphabet(alphabet.clone())?;
+    let alph = parse_crockford_alphabet(alphabet.clone())?;
     let vec = decode_crockford(&encoded, &alph)?;
     if vec.len() != 20 {
       return Err(Error::new(
@@ -705,31 +939,65 @@ impl Ksuid {
   }
 
   #[napi]
-  pub fn is_valid(base62: String) -> bool {
-    RawKsuid::from_base62(&base62).is_ok() || RawKsuidMs::from_base62(&base62).is_ok()
-  }
-
-  #[napi]
-  pub fn to_base62(&self) -> String {
-    match &self.inner {
-      KsuidInner::Sec(k) => k.to_string(),
-      KsuidInner::Ms(k) => k.to_string(),
+  pub fn is_valid(encoded: String, alphabet: Option<String>) -> bool {
+    let alph_62 = parse_base62_alphabet(alphabet.clone());
+    if let Ok(alph) = alph_62 {
+      if decode_base62_bytes(&encoded, 20, &alph).is_ok() {
+        return true;
+      }
     }
+    let alph_32 = parse_crockford_alphabet(alphabet.clone());
+    if let Ok(alph) = alph_32 {
+      if decode_crockford(&encoded, &alph).is_ok() {
+        return true;
+      }
+    }
+    let alph_36 = parse_base36_alphabet(alphabet);
+    if let Ok(alph) = alph_36 {
+      if decode_base36_bytes(&encoded, 20, &alph).is_ok() {
+        return true;
+      }
+    }
+    false
   }
 
   #[napi]
-  pub fn to_base36(&self) -> String {
-    encode_base36_bytes(self.bytes().as_ref())
+  pub fn to_base62(&self, alphabet: Option<String>) -> Result<String> {
+    let alph_opt = alphabet.or_else(|| {
+      if self.enc == "base62" {
+        self.alphabet.clone()
+      } else {
+        None
+      }
+    });
+    let alph = parse_base62_alphabet(alph_opt)?;
+    Ok(encode_base62_bytes(self.bytes().as_ref(), &alph))
+  }
+
+  #[napi]
+  pub fn to_base36(&self, alphabet: Option<String>) -> Result<String> {
+    let alph_opt = alphabet.or_else(|| {
+      if self.enc == "base36" {
+        self.alphabet.clone()
+      } else {
+        None
+      }
+    });
+    let alph = parse_base36_alphabet(alph_opt)?;
+    Ok(encode_base36_bytes(self.bytes().as_ref(), &alph))
   }
 
   #[napi]
   pub fn to_crockford_base32(&self, alphabet: Option<String>) -> Result<String> {
-    let alph_opt = alphabet.or_else(|| self.alphabet.clone());
-    let alph = parse_alphabet(alph_opt)?;
-    match &self.inner {
-      KsuidInner::Sec(k) => Ok(encode_crockford(k.bytes().as_ref(), &alph)),
-      KsuidInner::Ms(k) => Ok(encode_crockford(k.bytes().as_ref(), &alph)),
-    }
+    let alph_opt = alphabet.or_else(|| {
+      if self.enc == "base32" || self.enc == "crockford" {
+        self.alphabet.clone()
+      } else {
+        None
+      }
+    });
+    let alph = parse_crockford_alphabet(alph_opt)?;
+    Ok(encode_crockford(self.bytes().as_ref(), &alph))
   }
 
   #[napi]
@@ -757,9 +1025,9 @@ impl Ksuid {
     if target_enc == "base32" || target_enc == "crockford" {
       self.to_crockford_base32(target_alph)
     } else if target_enc == "base36" {
-      Ok(self.to_base36())
+      self.to_base36(target_alph)
     } else {
-      Ok(self.to_base62())
+      self.to_base62(target_alph)
     }
   }
 
@@ -805,6 +1073,8 @@ impl Ksuid {
 #[napi]
 pub struct KsuidMs {
   inner: RawKsuidMs,
+  pub enc: String,
+  pub alphabet: Option<String>,
 }
 
 #[napi]
@@ -838,7 +1108,11 @@ impl KsuidMs {
           } else {
             svix_ksuid::KsuidMs::from_base62(&s).map_err(|e| Error::new(Status::InvalidArg, e.to_string()))?
           };
-          Ok(KsuidMs { inner })
+          Ok(KsuidMs {
+            inner,
+            enc: "base62".to_string(),
+            alphabet: None,
+          })
         }
         Either::B(b) => {
           let slice: &[u8] = b.as_ref();
@@ -852,12 +1126,16 @@ impl KsuidMs {
           arr.copy_from_slice(slice);
           Ok(KsuidMs {
             inner: RawKsuidMs::from_bytes(arr),
+            enc: "base62".to_string(),
+            alphabet: None,
           })
         }
       }
     } else {
       Ok(KsuidMs {
         inner: RawKsuidMs::now(None),
+        enc: "base62".to_string(),
+        alphabet: None,
       })
     }
   }
@@ -867,6 +1145,8 @@ impl KsuidMs {
     let payload_ref = payload.as_ref().map(|b| b.as_ref());
     Ok(KsuidMs {
       inner: RawKsuidMs::now(payload_ref),
+      enc: "base62".to_string(),
+      alphabet: None,
     })
   }
 
@@ -875,33 +1155,45 @@ impl KsuidMs {
     let payload_ref = payload.as_ref().map(|b| b.as_ref());
     Ok(KsuidMs {
       inner: RawKsuidMs::from_millis(ms, payload_ref),
+      enc: "base62".to_string(),
+      alphabet: None,
     })
   }
 
   #[napi(factory)]
-  pub fn from_base62(base62: String) -> Result<Self> {
-    let inner = RawKsuidMs::from_base62(&base62).map_err(|e| Error::new(Status::InvalidArg, e.to_string()))?;
-    Ok(KsuidMs { inner })
-  }
-
-  #[napi(factory)]
-  pub fn from_str(base62: String) -> Result<Self> {
-    Self::from_base62(base62)
-  }
-
-  #[napi(factory)]
-  pub fn from_base36(encoded: String) -> Result<Self> {
-    let vec = decode_base36_bytes(&encoded, 20)?;
+  pub fn from_base62(base62: String, alphabet: Option<String>) -> Result<Self> {
+    let alph = parse_base62_alphabet(alphabet.clone())?;
+    let vec = decode_base62_bytes(&base62, 20, &alph)?;
     let mut arr = [0u8; 20];
     arr.copy_from_slice(&vec);
     Ok(KsuidMs {
       inner: RawKsuidMs::from_bytes(arr),
+      enc: "base62".to_string(),
+      alphabet,
+    })
+  }
+
+  #[napi(factory)]
+  pub fn from_str(base62: String, alphabet: Option<String>) -> Result<Self> {
+    Self::from_base62(base62, alphabet)
+  }
+
+  #[napi(factory)]
+  pub fn from_base36(encoded: String, alphabet: Option<String>) -> Result<Self> {
+    let alph = parse_base36_alphabet(alphabet.clone())?;
+    let vec = decode_base36_bytes(&encoded, 20, &alph)?;
+    let mut arr = [0u8; 20];
+    arr.copy_from_slice(&vec);
+    Ok(KsuidMs {
+      inner: RawKsuidMs::from_bytes(arr),
+      enc: "base36".to_string(),
+      alphabet,
     })
   }
 
   #[napi(factory)]
   pub fn from_crockford_base32(encoded: String, alphabet: Option<String>) -> Result<Self> {
-    let alph = parse_alphabet(alphabet)?;
+    let alph = parse_crockford_alphabet(alphabet.clone())?;
     let vec = decode_crockford(&encoded, &alph)?;
     if vec.len() != 20 {
       return Err(Error::new(
@@ -913,6 +1205,8 @@ impl KsuidMs {
     arr.copy_from_slice(&vec);
     Ok(KsuidMs {
       inner: RawKsuidMs::from_bytes(arr),
+      enc: "base32".to_string(),
+      alphabet,
     })
   }
 
@@ -934,28 +1228,71 @@ impl KsuidMs {
     arr.copy_from_slice(slice);
     Ok(KsuidMs {
       inner: RawKsuidMs::from_bytes(arr),
+      enc: "base62".to_string(),
+      alphabet: None,
     })
   }
 
   #[napi]
-  pub fn is_valid(base62: String) -> bool {
-    RawKsuidMs::from_base62(&base62).is_ok()
+  pub fn is_valid(encoded: String, alphabet: Option<String>) -> bool {
+    let alph_62 = parse_base62_alphabet(alphabet.clone());
+    if let Ok(alph) = alph_62 {
+      if decode_base62_bytes(&encoded, 20, &alph).is_ok() {
+        return true;
+      }
+    }
+    let alph_32 = parse_crockford_alphabet(alphabet.clone());
+    if let Ok(alph) = alph_32 {
+      if decode_crockford(&encoded, &alph).is_ok() {
+        return true;
+      }
+    }
+    let alph_36 = parse_base36_alphabet(alphabet);
+    if let Ok(alph) = alph_36 {
+      if decode_base36_bytes(&encoded, 20, &alph).is_ok() {
+        return true;
+      }
+    }
+    false
   }
 
   #[napi]
-  pub fn to_base62(&self) -> String {
-    self.inner.to_string()
+  pub fn to_base62(&self, alphabet: Option<String>) -> Result<String> {
+    let alph_opt = alphabet.or_else(|| {
+      if self.enc == "base62" {
+        self.alphabet.clone()
+      } else {
+        None
+      }
+    });
+    let alph = parse_base62_alphabet(alph_opt)?;
+    Ok(encode_base62_bytes(self.bytes().as_ref(), &alph))
   }
 
   #[napi]
-  pub fn to_base36(&self) -> String {
-    encode_base36_bytes(self.bytes().as_ref())
+  pub fn to_base36(&self, alphabet: Option<String>) -> Result<String> {
+    let alph_opt = alphabet.or_else(|| {
+      if self.enc == "base36" {
+        self.alphabet.clone()
+      } else {
+        None
+      }
+    });
+    let alph = parse_base36_alphabet(alph_opt)?;
+    Ok(encode_base36_bytes(self.bytes().as_ref(), &alph))
   }
 
   #[napi]
   pub fn to_crockford_base32(&self, alphabet: Option<String>) -> Result<String> {
-    let alph = parse_alphabet(alphabet)?;
-    Ok(encode_crockford(self.inner.bytes().as_ref(), &alph))
+    let alph_opt = alphabet.or_else(|| {
+      if self.enc == "base32" || self.enc == "crockford" {
+        self.alphabet.clone()
+      } else {
+        None
+      }
+    });
+    let alph = parse_crockford_alphabet(alph_opt)?;
+    Ok(encode_crockford(self.bytes().as_ref(), &alph))
   }
 
   #[napi]
@@ -965,30 +1302,27 @@ impl KsuidMs {
 
   #[napi]
   pub fn to_string(&self, options: Option<Either<String, ToStringOptions>>) -> Result<String> {
-    if let Some(opts) = options {
+    let target_enc = if let Some(ref opts) = options {
       match opts {
-        Either::A(enc) => {
-          if enc == "base32" || enc == "crockford" {
-            self.to_crockford_base32(None)
-          } else if enc == "base36" {
-            Ok(self.to_base36())
-          } else {
-            Ok(self.inner.to_string())
-          }
-        }
-        Either::B(opt_obj) => {
-          let enc = opt_obj.enc.as_deref().unwrap_or("base62");
-          if enc == "base32" || enc == "crockford" {
-            self.to_crockford_base32(opt_obj.alphabet)
-          } else if enc == "base36" {
-            Ok(self.to_base36())
-          } else {
-            Ok(self.inner.to_string())
-          }
-        }
+        Either::A(enc_str) => enc_str.clone(),
+        Either::B(opt_obj) => opt_obj.enc.clone().unwrap_or_else(|| self.enc.clone()),
       }
     } else {
-      Ok(self.inner.to_string())
+      self.enc.clone()
+    };
+
+    let target_alph = if let Some(Either::B(opt_obj)) = options {
+      opt_obj.alphabet.or_else(|| self.alphabet.clone())
+    } else {
+      self.alphabet.clone()
+    };
+
+    if target_enc == "base32" || target_enc == "crockford" {
+      self.to_crockford_base32(target_alph)
+    } else if target_enc == "base36" {
+      self.to_base36(target_alph)
+    } else {
+      self.to_base62(target_alph)
     }
   }
 

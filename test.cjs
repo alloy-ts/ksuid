@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { Ksuid, KsuidMs, CrockfordBase32, Base36 } = require("./dist/index.js");
+const { Ksuid, KsuidMs, Base62, Base36, CrockfordBase32 } = require("./dist/index.js");
 
 void test("Ksuid - creation and base62", () => {
   const ksuid = Ksuid.now();
@@ -95,6 +95,55 @@ void test("CrockfordBase32 class and shuffleAlphabet", () => {
   const numStr = cb32.encodeNumber(12345);
   const numDec = cb32.decodeNumber(numStr);
   assert.equal(numDec, 12345);
+});
+
+void test("Base62 class and seed-based shuffleAlphabet", () => {
+  const defaultAlph = Base62.defaultAlphabet();
+  assert.equal(defaultAlph.length, 62);
+
+  const shuffled = Base62.shuffleAlphabet("b62-seed");
+  assert.equal(shuffled.length, 62);
+  assert.notEqual(shuffled, defaultAlph);
+
+  const b62 = new Base62(shuffled);
+  const numStr = b62.encodeNumber(987654321);
+  const numDec = b62.decodeNumber(numStr);
+  assert.equal(numDec, 987654321);
+});
+
+void test("Base36 class and seed-based shuffleAlphabet", () => {
+  const defaultAlph = Base36.defaultAlphabet();
+  assert.equal(defaultAlph.length, 36);
+
+  const shuffled = Base36.shuffleAlphabet("b36-seed");
+  assert.equal(shuffled.length, 36);
+  assert.notEqual(shuffled, defaultAlph);
+
+  const b36 = new Base36(shuffled);
+  const numStr = b36.encodeNumber(1234567);
+  const numDec = b36.decodeNumber(numStr);
+  assert.equal(numDec, 1234567);
+});
+
+void test("Deterministic alphabet shuffling and encoding across Base62, Base36, Base32", () => {
+  const seed = "unified-seed-100";
+  const b62Alph = Base62.shuffleAlphabet(seed);
+  const b36Alph = Base36.shuffleAlphabet(seed);
+  const b32Alph = CrockfordBase32.shuffleAlphabet(seed);
+
+  const ksuid = Ksuid.now();
+
+  const str62 = ksuid.toBase62(b62Alph);
+  const k62 = Ksuid.fromBase62(str62, b62Alph);
+  assert.equal(k62.equals(ksuid), true);
+
+  const str36 = ksuid.toBase36(b36Alph);
+  const k36 = Ksuid.fromBase36(str36, b36Alph);
+  assert.equal(k36.equals(ksuid), true);
+
+  const str32 = ksuid.toBase32(b32Alph);
+  const k32 = Ksuid.fromBase32(str32, b32Alph);
+  assert.equal(k32.equals(ksuid), true);
 });
 
 void test("Ksuid - from base62 string", () => {
